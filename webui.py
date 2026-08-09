@@ -100,8 +100,69 @@ MODELS = {
         "thinking": True,
         "native_tools": True,
     },
+    "kimi": {
+        "label": "kimi-k3 (synthetic.new)",
+        "url": os.environ.get("KIMI_API_URL", "https://api.synthetic.new/anthropic/v1").rstrip("/"),
+        # Anthropic-messages-API backend (see config.yaml's custom_providers).
+        # Key comes from ANTHROPIC_API_KEY in the environment or .env.
+        "api": "anthropic",
+        "model": "hf:moonshotai/Kimi-K3",
+        "key_env": "ANTHROPIC_API_KEY",
+        "context": 500_000,  # from config.yaml's custom_providers entry
+        "native_tools": True,
+    },
 }
 DEFAULT_MODEL = "talkie"
+
+
+_CTX_CACHE: dict[str, int] = {}
+
+
+def model_context_size(model_id: str) -> int | None:
+    """Context window for a backend: explicit config, else llama /props."""
+    cfg = MODELS.get(model_id)
+    if not cfg:
+        return None
+    if cfg.get("context"):
+        return cfg["context"]
+    if model_id in _CTX_CACHE:
+        return _CTX_CACHE[model_id]
+    if cfg.get("api") == "anthropic":
+        return None
+    n = None
+    try:
+        with urllib.request.urlopen(cfg["url"] + "/props", timeout=5) as r:
+            props = json.loads(r.read().decode("utf-8"))
+        n = (props.get("total_tokens")
+             or (props.get("default_generation_settings") or {}).get("n_ctx"))
+    except Exception:
+        pass
+    if n:
+        _CTX_CACHE[model_id] = n  # cache hits only; worker may be cold otherwise
+    return n or None
+
+
+def _load_dotenv(path: Path) -> dict:
+    """Minimal KEY=VALUE parser so the API key can live in .env next to this file."""
+    out = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+_DOTENV = _load_dotenv(ROOT / ".env")
+
+
+def _env(key: str) -> str | None:
+    """Real environment wins; .env next to webui.py is the fallback."""
+    return os.environ.get(key) or _DOTENV.get(key)
 
 # --- bash tool ---------------------------------------------------------------
 # When the UI sends "tools": true, the model may emit <bash>...</bash> to run
@@ -110,7 +171,7 @@ DEFAULT_MODEL = "talkie"
 # TALKIE_BASH_WORKDIR). After the call, the server appends
 # <output>...</output> to the same assistant message and lets the model
 # continue, up to MAX_TOOL_CALLS per user message.
-BASH_WORKDIR = os.environ.get("TALKIE_BASH_WORKDIR", str(Path.home() / "prog"))
+BASH_WORKDIR = os.environ.get("TALKIE_BASH_WORKDIR", str(Path.home() / "prog" / "chats"))
 BASH_TIMEOUT_S = int(os.environ.get("TALKIE_BASH_TIMEOUT", "120"))
 BASH_MAX_OUTPUT = 4000   # chars of combined stdout+stderr fed back to the model
 MAX_TOOL_CALLS = 8       # tool calls per user message, then generation stops
@@ -651,15 +712,124 @@ def _common_sampling(temperature: float, max_new_tokens: int) -> dict:
     }
 
 
+def _merge_append(conv: list, role: str, blocks: list) -> None:
+    """Append blocks to the anthropic conversation, merging same-role runs.
+
+    The messages API requires roles to alternate; consecutive user messages
+    (e.g. a user turn followed by tool results) merge into one.
+    """
+    if conv and conv[-1]["role"] == role:
+        conv[-1]["content"].extend(blocks)
+    else:
+        conv.append({"role": role, "content": blocks})
+
+
+def _to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Convert our OpenAI-shaped message list to anthropic messages format.
+
+    System messages become the top-level `system` param; assistant tool_calls
+    become tool_use blocks; tool results become tool_result blocks inside a
+    user message.
+    """
+    system_parts = []
+    conv = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role == "system":
+            if content:
+                system_parts.append(content)
+        elif role == "assistant":
+            blocks = []
+            if content:
+                blocks.append({"type": "text", "text": content})
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                try:
+                    inp = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    inp = {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id") or "call",
+                    "name": fn.get("name"),
+                    "input": inp,
+                })
+            if blocks:
+                _merge_append(conv, "assistant", blocks)
+        elif role == "tool":
+            _merge_append(conv, "user", [{
+                "type": "tool_result",
+                "tool_use_id": m.get("tool_call_id"),
+                "content": m.get("content") or "",
+            }])
+        elif role == "user":
+            _merge_append(conv, "user", [{"type": "text", "text": content or ""}])
+    if conv and conv[0]["role"] != "user":
+        conv.insert(0, {"role": "user", "content": [{"type": "text", "text": "..."}]})
+    return "\n\n".join(system_parts), conv
+
+
+def _anthropic_tool_def(d: dict) -> dict:
+    """Convert our OpenAI-style function def to anthropic's tool shape."""
+    f = d["function"]
+    return {
+        "name": f["name"],
+        "description": f["description"],
+        "input_schema": f["parameters"],
+    }
+
+
+# Anthropic requires a positive max_tokens; -1 ("until EOS") doesn't exist
+# there, so uncapped requests get this instead.
+ANTHROPIC_MAX_TOKENS = int(os.environ.get("TALKIE_ANTHROPIC_MAX_TOKENS", "32768"))
+
+
+def _anthropic_request(cfg: dict, messages: list[dict], temperature: float,
+                       max_new_tokens: int, tool_defs: list | None = None):
+    """Open a streaming POST to an anthropic-messages-compatible endpoint."""
+    system, conv = _to_anthropic(messages)
+    body = {
+        "model": cfg["model"],
+        "messages": conv,
+        "stream": True,
+        "max_tokens": max_new_tokens if max_new_tokens > 0 else ANTHROPIC_MAX_TOKENS,
+        "temperature": min(temperature, 1.0),  # anthropic caps at 1
+    }
+    if system:
+        body["system"] = system
+    if tool_defs:
+        body["tools"] = [_anthropic_tool_def(d) for d in tool_defs]
+    req = urllib.request.Request(
+        f"{cfg['url']}/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "x-api-key": _env(cfg.get("key_env", "ANTHROPIC_API_KEY")) or "",
+            "anthropic-version": "2023-06-01",
+            "accept": "text/event-stream",
+        },
+        method="POST",
+    )
+    return urllib.request.urlopen(req)
+
+
 def _chat_completions_request(model_url: str, messages: list[dict],
                               temperature: float, max_new_tokens: int,
                               disable_eos: bool, model_id: str,
                               tools: bool = False, web: bool = False,
                               tool_defs: list | None = None):
     """Open a streaming POST to llama-server's /v1/chat/completions endpoint."""
+    cfg = MODELS[model_id]
+    if cfg.get("api") == "anthropic":
+        # Anthropic backends speak a different protocol entirely; disable_eos
+        # and textual tool stops are llama.cpp concepts that don't apply.
+        return _anthropic_request(cfg, messages, temperature, max_new_tokens,
+                                  tool_defs=tool_defs)
     body = {
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "cache_prompt": True,
         **_common_sampling(temperature, max_new_tokens),
     }
@@ -772,6 +942,51 @@ def _iter_sse_payloads(response):
             continue
 
 
+def _extract_usage(payload: dict) -> dict | None:
+    """Pull token-usage info out of a stream payload, or None.
+
+    Anthropic: message_start carries input + cache counts, message_delta the
+    final output count. OpenAI/llama.cpp: a terminal chunk with "usage" (when
+    stream_options.include_usage is set) or /completion's "timings".
+    """
+    ptype = payload.get("type")
+    if ptype == "message_start":
+        u = (payload.get("message") or {}).get("usage") or {}
+        return {"input": u.get("input_tokens"),
+                "cache_write": u.get("cache_creation_input_tokens"),
+                "cache_read": u.get("cache_read_input_tokens")}
+    if ptype == "message_delta":
+        u = payload.get("usage") or {}
+        if u.get("output_tokens") is not None:
+            return {"output": u["output_tokens"]}
+        return None
+    u = payload.get("usage")
+    if u:
+        return {"input": u.get("prompt_tokens"), "output": u.get("completion_tokens")}
+    t = payload.get("timings")
+    if t:
+        return {"input": t.get("prompt_n"), "output": t.get("predicted_n"),
+                "cache_read": t.get("cache_n")}
+    return None
+
+
+def _merge_usage(acc: dict, u: dict | None) -> None:
+    """Fold one payload's usage into the turn accumulator.
+
+    Output sums across agent rounds; input/cache describe the round's context,
+    so the last round wins.
+    """
+    if not u:
+        return
+    for k, v in u.items():
+        if v is None:
+            continue
+        if k == "output":
+            acc["output"] = acc.get("output", 0) + v
+        else:
+            acc[k] = v
+
+
 def _extract_delta(payload: dict) -> tuple[str, str, bool, list]:
     """Pull the next text chunk, its kind, done flag, and any tool-call deltas.
 
@@ -782,7 +997,44 @@ def _extract_delta(payload: dict) -> tuple[str, str, bool, list]:
 
     /v1/chat/completions: {"choices":[{"delta":{"content"|"reasoning_content":"...","tool_calls":[...]},"finish_reason":...}]}
     /completion:          {"content":"...","stop":bool,...}
+    anthropic messages:   {"type":"content_block_start|content_block_delta|message_delta|...", ...}
     """
+    ptype = payload.get("type")
+    if ptype:
+        # Anthropic messages stream. tool_use blocks are reported in the same
+        # OpenAI-ish delta shape the agent loop accumulates.
+        if ptype == "content_block_start":
+            block = payload.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                # Stock anthropic streams the input via input_json_delta with
+                # an empty input here, but some compatible providers (e.g.
+                # synthetic.new) deliver the complete input up front.
+                inp = block.get("input") or {}
+                return "", "content", False, [{
+                    "id": block.get("id"),
+                    "function": {"name": block.get("name"),
+                                 "arguments": json.dumps(inp) if inp else ""},
+                }]
+            return block.get("text") or "", "content", False, []
+        if ptype == "content_block_delta":
+            d = payload.get("delta") or {}
+            dt = d.get("type")
+            if dt == "text_delta":
+                return d.get("text") or "", "content", False, []
+            if dt == "thinking_delta":
+                return d.get("thinking") or "", "reasoning", False, []
+            if dt == "input_json_delta":
+                return "", "content", False, [{
+                    "function": {"arguments": d.get("partial_json") or ""},
+                }]
+            return "", "content", False, []
+        if ptype == "message_delta":
+            done = (payload.get("delta") or {}).get("stop_reason") is not None
+            return "", "content", done, []
+        if ptype == "message_stop":
+            return "", "content", True, []
+        # message_start, content_block_stop, ping, ...
+        return "", "content", False, []
     if "choices" in payload:
         choices = payload.get("choices") or []
         if not choices:
@@ -805,14 +1057,16 @@ def _stream_loop(open_response, start_event: dict, persist):
     """SSE generator wrapping any llama-server streaming response.
 
     `open_response()` is a zero-arg callable that returns an open
-    http.client.HTTPResponse-like object. `persist(full_text)` is called
+    http.client.HTTPResponse-like object. `persist(full)` is called
     exactly once at end of stream (or on cancel) with whatever was streamed.
     """
     rid = uuid.uuid4().hex
     cancel = Event()
     CANCELS[rid] = cancel
+    model_id = start_event.get("model", "")
 
     full = ""
+    usage: dict = {}
     persisted = False
 
     def do_persist():
@@ -820,7 +1074,7 @@ def _stream_loop(open_response, start_event: dict, persist):
         if persisted:
             return
         persisted = True
-        persist(full)
+        persist(full, usage)
 
     response = None
     try:
@@ -855,6 +1109,7 @@ def _stream_loop(open_response, start_event: dict, persist):
             for payload in _iter_sse_payloads(response):
                 if cancel.is_set():
                     break
+                _merge_usage(usage, _extract_usage(payload))
                 text, kind, done, _tool_calls = _extract_delta(payload)
                 if text:
                     # Inject <think>/</think> boundaries inline whenever the
@@ -878,8 +1133,11 @@ def _stream_loop(open_response, start_event: dict, persist):
         if current_kind == "reasoning":
             yield emit(THINK_CLOSE)
 
+        ctx = model_context_size(model_id)
+        if ctx:
+            usage.setdefault("context", ctx)
         do_persist()
-        yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "done", "usage": usage}) + "\n\n"
     except GeneratorExit:
         cancel.set()
         if response is not None:
@@ -918,18 +1176,19 @@ def stream_generation(
     asst_id = uuid.uuid4().hex
     model_url = MODELS[model_id]["url"]
 
-    def persist(full):
-        append_event(
-            {
-                "type": "msg",
-                "id": asst_id,
-                "conversation_id": cid,
-                "role": "assistant",
-                "content": full,
-                "parent_id": parent_id,
-                "model": model_id,
-            }
-        )
+    def persist(full, usage):
+        ev = {
+            "type": "msg",
+            "id": asst_id,
+            "conversation_id": cid,
+            "role": "assistant",
+            "content": full,
+            "parent_id": parent_id,
+            "model": model_id,
+        }
+        if usage:
+            ev["usage"] = usage
+        append_event(ev)
         if auto_select:
             append_event(
                 {"type": "select", "conversation_id": cid, "msg_id": asst_id}
@@ -984,6 +1243,7 @@ def stream_agent(
     CANCELS[rid] = cancel
 
     full = ""
+    usage: dict = {}
     persisted = False
     response = None
 
@@ -992,17 +1252,18 @@ def stream_agent(
         if persisted:
             return
         persisted = True
-        append_event(
-            {
-                "type": "msg",
-                "id": asst_id,
-                "conversation_id": cid,
-                "role": "assistant",
-                "content": full,
-                "parent_id": parent_id,
-                "model": model_id,
-            }
-        )
+        ev: dict = {
+            "type": "msg",
+            "id": asst_id,
+            "conversation_id": cid,
+            "role": "assistant",
+            "content": full,
+            "parent_id": parent_id,
+            "model": model_id,
+        }
+        if usage:
+            ev["usage"] = usage
+        append_event(ev)
         if auto_select:
             append_event(
                 {"type": "select", "conversation_id": cid, "msg_id": asst_id}
@@ -1070,6 +1331,7 @@ def stream_agent(
                 for payload in _iter_sse_payloads(response):
                     if cancel.is_set():
                         break
+                    _merge_usage(usage, _extract_usage(payload))
                     text, kind, done, _tool_calls = _extract_delta(payload)
                     if text:
                         if kind != current_kind:
@@ -1114,8 +1376,11 @@ def stream_agent(
         if current_kind == "reasoning":
             yield emit(THINK_CLOSE)
 
+        ctx = model_context_size(model_id)
+        if ctx:
+            usage.setdefault("context", ctx)
         do_persist()
-        yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "done", "usage": usage}) + "\n\n"
     except GeneratorExit:
         cancel.set()
         if response is not None:
@@ -1176,13 +1441,15 @@ def stream_agent_native(
     response = None
     parent = parent_id
     pending_text = ""      # current round's streamed text, not yet persisted
+    usage: dict = {}
     persisted_final = False
     current_kind = "content"
 
-    def persist_msg(role: str, content: str, tool: str | None = None) -> str:
+    def persist_msg(role: str, content: str, tool: str | None = None,
+                    usage: dict | None = None) -> str:
         nonlocal parent
         mid = uuid.uuid4().hex
-        ev = {
+        ev: dict = {
             "type": "msg",
             "id": mid,
             "conversation_id": cid,
@@ -1193,17 +1460,21 @@ def stream_agent_native(
         }
         if tool:
             ev["tool"] = tool
+        if usage:
+            ev["usage"] = usage
         append_event(ev)
         parent = mid
         return mid
 
     def do_persist_final():
         # The reply's final (or partial, on cancel) text, as an assistant msg.
+        # Carries the whole turn's usage (all rounds summed) so /usage can
+        # total conversations later.
         nonlocal persisted_final
         if persisted_final:
             return
         persisted_final = True
-        mid = persist_msg("assistant", pending_text)
+        mid = persist_msg("assistant", pending_text, usage=usage)
         if auto_select:
             append_event(
                 {"type": "select", "conversation_id": cid, "msg_id": mid}
@@ -1244,9 +1515,8 @@ def stream_agent_native(
                 break
             RESPONSES[rid] = response
 
-            call_id = None
-            call_name = None
-            call_args = ""
+            calls: list[dict] = []  # tool calls this round, in order
+            tool_stream_open = None  # (call dict, tag) streaming live, if any
 
             # Same teardown-tolerant read as _stream_loop: /stop closing the
             # socket mid-read surfaces as AttributeError/ValueError/OSError.
@@ -1254,14 +1524,43 @@ def stream_agent_native(
                 for payload in _iter_sse_payloads(response):
                     if cancel.is_set():
                         break
+                    _merge_usage(usage, _extract_usage(payload))
                     text, kind, done, tcs = _extract_delta(payload)
                     for c in tcs:
-                        if c.get("id"):
-                            call_id = c["id"]
                         fn = c.get("function") or {}
-                        if fn.get("name"):
-                            call_name = fn["name"]
-                        call_args += fn.get("arguments") or ""
+                        frag = fn.get("arguments") or ""
+                        idx = c.get("index")
+                        # A delta with an id (anthropic content_block_start)
+                        # or a fresh index (OpenAI parallel calls) opens a new
+                        # call; anything else continues the targeted/last one.
+                        if c.get("id") is not None or (idx is not None and idx >= len(calls)):
+                            calls.append({"id": c.get("id"),
+                                          "name": fn.get("name") or "",
+                                          "args": frag})
+                        elif calls:
+                            tgt = calls[idx] if (idx is not None and idx < len(calls)) else calls[-1]
+                            if fn.get("name"):
+                                tgt["name"] = fn["name"]
+                            tgt["args"] += frag
+                        else:
+                            continue
+                        # Stream the call as it forms so the user can watch
+                        # it, wrapped in the same <bash>/<web> tag the UI
+                        # renders for textual tool calls. Not persisted —
+                        # the call gets its own tool_call bubble after.
+                        cur = calls[idx] if (idx is not None and idx < len(calls)) else calls[-1]
+                        if tool_stream_open is None or tool_stream_open[0] is not cur:
+                            if tool_stream_open is not None:
+                                yield emit(f"</{tool_stream_open[1]}>\n")
+                            tag = cur["name"] or "tool"
+                            if current_kind == "reasoning":
+                                pending_text += THINK_CLOSE
+                                yield emit(THINK_CLOSE)
+                                current_kind = "content"
+                            yield emit(f"\n<{tag}>")
+                            tool_stream_open = (cur, tag)
+                        if frag:
+                            yield emit(frag)
                     if text:
                         if kind != current_kind:
                             if current_kind == "reasoning":
@@ -1284,22 +1583,13 @@ def stream_agent_native(
             response = None
             RESPONSES.pop(rid, None)
 
-            if cancel.is_set() or not call_args:
+            if tool_stream_open is not None:
+                yield emit(f"</{tool_stream_open[1]}>\n")
+
+            if cancel.is_set() or not calls:
                 break  # normal round (or interrupt) — pending_text is final
 
-            try:
-                parsed = json.loads(call_args)
-            except json.JSONDecodeError:
-                parsed = {}
-            name = call_name or ("bash" if tools else "web")
-            arg = (parsed.get("url" if name == "web" else "command") or "").strip()
-            if not arg and name == "bash":
-                arg = call_args.strip()
-            if not arg:
-                break
-            enabled = (name == "bash" and tools) or (name == "web" and web)
-
-            # Persist the round: optional text, then the call, then the result.
+            # Persist the round: optional text, then each call + its result.
             if pending_text.strip():
                 persist_msg("assistant", pending_text)
                 pending_text = ""
@@ -1310,53 +1600,73 @@ def stream_agent_native(
                 yield emit(THINK_CLOSE)
                 current_kind = "content"
 
-            tc_id = persist_msg("tool_call", arg, tool=name)
-            yield "data: " + json.dumps(
-                {"type": "tool_msg", "role": "tool_call", "id": tc_id,
-                 "content": arg, "tool": name}
-            ) + "\n\n"
+            round_tcs = []
+            round_results = []
+            for call in calls:
+                try:
+                    parsed = json.loads(call["args"]) if call["args"] else {}
+                except json.JSONDecodeError:
+                    parsed = {}
+                if not isinstance(parsed, dict):
+                    parsed = {}
+                name = call["name"] or ("bash" if tools else "web")
+                arg = (parsed.get("url" if name == "web" else "command") or "").strip()
+                if not arg and name == "bash":
+                    arg = call["args"].strip()
+                enabled = (name == "bash" and tools) or (name == "web" and web)
 
-            if not enabled:
-                # Model called a tool that isn't enabled in this chat.
-                output = f"[error: the {name} tool is not enabled in this chat]"
-            else:
-                run = (lambda: run_bash(arg, workdir)) if name == "bash" \
-                    else (lambda: run_web(arg))
-                if approve:
-                    yield "data: " + json.dumps(
-                        {"type": "tool_propose", "content": arg}
-                    ) + "\n\n"
-                    output = _gated_run(rid, cancel, run)
+                tc_id = persist_msg("tool_call", arg, tool=name)
+                yield "data: " + json.dumps(
+                    {"type": "tool_msg", "role": "tool_call", "id": tc_id,
+                     "content": arg, "tool": name}
+                ) + "\n\n"
+
+                if not arg:
+                    output = "[error: could not parse the tool call arguments]"
+                elif not enabled:
+                    # Model called a tool that isn't enabled in this chat.
+                    output = f"[error: the {name} tool is not enabled in this chat]"
                 else:
-                    output = run()
-            to_id = persist_msg("tool", output)
-            yield "data: " + json.dumps(
-                {"type": "tool_msg", "role": "tool", "id": to_id, "content": output}
-            ) + "\n\n"
+                    run = (lambda a=arg: run_bash(a, workdir)) if name == "bash" \
+                        else (lambda a=arg: run_web(a))
+                    if approve:
+                        yield "data: " + json.dumps(
+                            {"type": "tool_propose", "content": arg}
+                        ) + "\n\n"
+                        output = _gated_run(rid, cancel, run)
+                    else:
+                        output = run()
+                to_id = persist_msg("tool", output)
+                yield "data: " + json.dumps(
+                    {"type": "tool_msg", "role": "tool", "id": to_id, "content": output}
+                ) + "\n\n"
+
+                result_id = call["id"] or tc_id
+                round_tcs.append({
+                    "id": result_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": call["args"] or "{}"},
+                })
+                round_results.append(
+                    {"role": "tool", "tool_call_id": result_id, "content": output}
+                )
+                if cancel.is_set():
+                    break
 
             messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": call_id or tc_id,
-                            "type": "function",
-                            "function": {"name": name, "arguments": call_args},
-                        }
-                    ],
-                }
+                {"role": "assistant", "content": None, "tool_calls": round_tcs}
             )
-            messages.append(
-                {"role": "tool", "tool_call_id": call_id or tc_id, "content": output}
-            )
+            messages.extend(round_results)
 
         if current_kind == "reasoning":
             pending_text += THINK_CLOSE
             yield emit(THINK_CLOSE)
 
+        ctx = model_context_size(model_id)
+        if ctx:
+            usage.setdefault("context", ctx)
         do_persist_final()
-        yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+        yield "data: " + json.dumps({"type": "done", "usage": usage}) + "\n\n"
     except GeneratorExit:
         cancel.set()
         if response is not None:
@@ -1398,6 +1708,10 @@ def stream_extension(
     asst = by_id.get(asst_id)
     if asst is None or asst["role"] != "assistant":
         raise ValueError("not found or not assistant msg")
+    if MODELS[model_id].get("api") == "anthropic":
+        # /apply-template + /completion are llama-server endpoints; there's no
+        # equivalent "append to an open turn" on the anthropic messages API.
+        raise ValueError("continue is not supported for anthropic-api models")
     parent_messages = thread_to_messages(msgs, asst["parent_id"])
     model_url = MODELS[model_id]["url"]
     # /apply-template defaults to add_generation_prompt=true → returned
@@ -1408,18 +1722,19 @@ def stream_extension(
     base_prompt = _apply_template(model_url, parent_messages, model_id)
     prompt = base_prompt + strip_think_blocks(asst["content"])
 
-    def persist(full):
+    def persist(full, usage):
         if not full:
             return
-        append_event(
-            {
-                "type": "extend",
-                "conversation_id": cid,
-                "msg_id": asst_id,
-                "content_append": full,
-                "model": model_id,
-            }
-        )
+        ev = {
+            "type": "extend",
+            "conversation_id": cid,
+            "msg_id": asst_id,
+            "content_append": full,
+            "model": model_id,
+        }
+        if usage:
+            ev["usage"] = usage
+        append_event(ev)
 
     return _stream_loop(
         open_response=lambda: _completion_request(
@@ -1513,6 +1828,66 @@ def approve():
         a["approved"] = bool(data.get("approved"))
         a["event"].set()
     return ""
+
+
+USAGE_KEYS = ("input", "cache_write", "cache_read", "output")
+
+
+@app.route("/usage")
+def usage_route():
+    """Conversation token totals in two scopes: every logged turn ("all")
+    and just the active thread ("thread"). Also the active thread's latest
+    input (≈ current context fill) and the model's ctx size.
+
+    Turns from before usage tracking simply don't contribute.
+    """
+    cid = request.args.get("conversation_id", "")
+    all_total = dict.fromkeys(USAGE_KEYS, 0)
+    thread_total = dict.fromkeys(USAGE_KEYS, 0)
+    last_input = None
+    last_model = None
+    if cid and LOG_PATH.exists():
+        msgs, selects = load_conversation(cid)
+        thread_ids = {m["id"] for m in active_thread(msgs, selects)}
+        with open(LOG_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("conversation_id") != cid:
+                    continue
+                if e.get("type") == "msg" and e.get("model"):
+                    last_model = e["model"]
+                u = e.get("usage")
+                if not u:
+                    continue
+                for k in USAGE_KEYS:
+                    all_total[k] += u.get(k) or 0
+                on_thread = (e.get("id") if e.get("type") == "msg"
+                             else e.get("msg_id")) in thread_ids
+                if on_thread:
+                    for k in USAGE_KEYS:
+                        thread_total[k] += u.get(k) or 0
+                    if u.get("input") is not None:
+                        # Anthropic's input_tokens excludes cache-read tokens,
+                        # so add those back for a true context-fill number.
+                        # (llama's prompt_n already includes its cache_n.)
+                        last_input = u["input"] + (
+                            u.get("cache_read") or 0
+                            if MODELS.get(last_model or "", {}).get("api") == "anthropic"
+                            else 0
+                        )
+    model = last_model or (conversation_model(cid) if cid else DEFAULT_MODEL)
+    return jsonify({
+        "all": all_total,
+        "thread": thread_total,
+        "last_input": last_input,
+        "context": model_context_size(model),
+    })
 
 
 @app.route("/models")

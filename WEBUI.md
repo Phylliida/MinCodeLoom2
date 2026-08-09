@@ -50,6 +50,7 @@ All bodies are JSON. Streaming endpoints return Server-Sent Events.
 | `POST /stop` | `{request_id}` | empty 200 |
 | `GET/POST /model` | `?conversation_id=` / `{conversation_id, model}` | per-chat backend |
 | `GET/POST /workdir` | `?conversation_id=` / `{conversation_id, workdir}` | per-chat bash workdir |
+| `GET /usage` | `?conversation_id=` | token totals (all branches + active thread) + ctx size |
 
 Edits are non-destructive: `branch_user` and `edit_assistant` create a **new sibling**
 with the provided content and select it. The original is still on disk and reachable

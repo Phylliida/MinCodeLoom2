@@ -510,7 +510,7 @@
     <button type="submit" class="sendbtn" id="send">send</button>
     <button type="button" class="stopbtn" id="stop" hidden>stop</button>
   </form>
-  <div class="hint">No KV cache — replies stream at ~10 tok/s.</div>
+  <div class="hint" id="hint">No KV cache — replies stream at ~10 tok/s.</div>
 </main>
 
 <div class="pngmodal-backdrop" id="png-modal" hidden>
@@ -1149,7 +1149,45 @@ async function loadHistory() {
   thread = await r.json();
   renderThread();
   if (log.lastChild) log.lastChild.scrollIntoView({block: "end"});
+  loadUsage();
 }
+
+// Conversation token totals in the hint line, from per-turn usage stored in
+// the log (turns from before tracking don't count). Click the line to toggle
+// between "all" (every logged turn, all branches) and "thread" (just the
+// active thread, start to finish). Context fill is always the active thread.
+const HINT_DEFAULT = $("hint").textContent;
+let usageScope = localStorage.getItem("talkie_usage_scope") || "all";
+let lastUsage = null;
+async function loadUsage() {
+  try {
+    const r = await fetch("/usage?conversation_id=" + encodeURIComponent(cid));
+    lastUsage = await r.json();
+    renderUsage();
+  } catch {}
+}
+function renderUsage() {
+  const hintEl = $("hint");
+  if (!lastUsage) return;
+  const t = (usageScope === "thread" ? lastUsage.thread : lastUsage.all) || {};
+  if (!t.input && !t.output) {  // no tracked turns yet — default hint
+    hintEl.textContent = HINT_DEFAULT;
+    return;
+  }
+  const fmt = n => n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+  const parts = [`${usageScope} · in ${fmt(t.input)}`];
+  if (t.cache_write || t.cache_read) parts.push(`cache wr ${fmt(t.cache_write)} rd ${fmt(t.cache_read)}`);
+  parts.push(`out ${fmt(t.output)}`);
+  if (lastUsage.context) parts.push(`ctx ${fmt(lastUsage.last_input || 0)}/${fmt(lastUsage.context)}`);
+  hintEl.textContent = parts.join(" · ");
+}
+$("hint").title = "click: toggle usage scope (all branches / this thread)";
+$("hint").style.cursor = "pointer";
+$("hint").onclick = () => {
+  usageScope = usageScope === "all" ? "thread" : "all";
+  localStorage.setItem("talkie_usage_scope", usageScope);
+  renderUsage();
+};
 
 async function loadConvs() {
   const r = await fetch("/conversations");
@@ -1241,6 +1279,7 @@ $("new-chat").onclick = async () => {
   renderThread();
   loadConvs();
   loadWorkdir();  // new conversation → server default workdir
+  loadUsage();    // …and no tracked usage → default hint
   // Anchor the new conversation to whichever model is currently picked so
   // it sticks before the first message is sent.
   if (currentModel) {
@@ -1272,6 +1311,18 @@ input.addEventListener("keydown", (e) => {
 async function streamInto(url, body, placeholderEl) {
   setBusy(true);
   currentAbort = new AbortController();
+  // Live token counter in the hint line while streaming: ~chars/4 tokens
+  // (estimate that works for both per-token llama.cpp deltas and kimi's
+  // sub-word fragments) plus a wall-clock rate. Restored when done.
+  const hintEl = $("hint");
+  const hintOrig = hintEl.textContent;
+  let streamChars = 0, streamT0 = 0;
+  function updateHint() {
+    const est = Math.round(streamChars / 4);
+    const secs = (performance.now() - streamT0) / 1000;
+    const rate = secs > 0.5 ? (est / secs).toFixed(1) : "…";
+    hintEl.textContent = `~${est} tokens · ${rate} tok/s`;
+  }
   // Mutable: native tool calling can split one reply into several bubbles —
   // after a tool_msg event, subsequent deltas go into a fresh assistant one.
   let contentEl = placeholderEl.querySelector(".content");
@@ -1310,7 +1361,11 @@ async function streamInto(url, body, placeholderEl) {
         const data = JSON.parse(line.slice(5).trim());
         if (data.type === "start") {
           currentRequestId = data.request_id;
+          streamChars = 0;
+          streamT0 = performance.now();
         } else if (data.type === "delta") {
+          streamChars += data.text.length;
+          updateHint();
           streamAppend(contentEl, cursor, data.text);
           contentEl.closest(".msg").scrollIntoView({block: "end"});
         } else if (data.type === "tool_msg") {
@@ -1381,6 +1436,7 @@ async function streamInto(url, body, placeholderEl) {
     cursor.remove();
     clearStreamState(contentEl);
     if (approvalBar) approvalBar.remove();
+    hintEl.textContent = hintOrig;
     currentRequestId = null;
     currentAbort = null;
     setBusy(false);
