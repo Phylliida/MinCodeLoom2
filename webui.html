@@ -1,0 +1,1701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>talkie</title>
+<style>
+  :root {
+    --bg: #f4ede0;
+    --paper: #fbf6ec;
+    --ink: #2b2520;
+    --rule: #c9b89a;
+    --user-bg: #e8e1d1;
+    --accent: #6b4423;
+    --muted: #888;
+    --stop: #8b2a1c;
+    --stop-ink: var(--paper);
+    --send-ink: var(--paper);
+  }
+  :root[data-theme=dark] {
+    --bg: #15110d;
+    --paper: #1f1a14;
+    --ink: #d8ccb2;
+    --rule: #4a3e2d;
+    --user-bg: #2a221a;
+    --accent: #c9a06b;
+    --muted: #8a8070;
+    --stop: #a8463a;
+    --stop-ink: #1a0e0a;
+    --send-ink: #1a140d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      --bg: #15110d;
+      --paper: #1f1a14;
+      --ink: #d8ccb2;
+      --rule: #4a3e2d;
+      --user-bg: #2a221a;
+      --accent: #c9a06b;
+      --muted: #8a8070;
+      --stop: #a8463a;
+      --stop-ink: #1a0e0a;
+      --send-ink: #1a140d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Georgia", "Times New Roman", serif;
+    background: var(--bg);
+    color: var(--ink);
+    margin: 0;
+    display: flex;
+    /* dvh > vh on mobile: shrinks when the soft keyboard is up so the
+       input stays visible instead of getting pushed off-screen. */
+    height: 100dvh;
+  }
+  aside {
+    width: 220px;
+    border-right: 1px solid var(--rule);
+    padding: 1em;
+    overflow-y: auto;
+    background: var(--paper);
+    flex-shrink: 0;
+  }
+  /* Hamburger toggle is always visible; sidebar is collapsible at any size. */
+  .menubtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2em;
+    height: 2.2em;
+    padding: 0;
+    font-size: 1.1em;
+    line-height: 1;
+  }
+  aside.collapsed { display: none; }
+  /* Backdrop is mobile-only; shown when the drawer is open. */
+  .drawer-backdrop { display: none; }
+  aside h2 {
+    font-size: 0.95em;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin: 0 0 0.5em;
+    color: var(--accent);
+  }
+  .conv {
+    cursor: pointer;
+    padding: 0.4em 0.5em;
+    border-radius: 3px;
+    font-size: 0.85em;
+    color: var(--muted);
+    margin-bottom: 0.2em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conv:hover { background: var(--user-bg); }
+  .conv.active { background: var(--user-bg); color: var(--ink); font-weight: bold; }
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 1.5em 2em;
+    overflow: hidden;
+    width: 100%;
+  }
+  header {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.5em;
+    margin-bottom: 1em;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.6em;
+    font-variant: small-caps;
+    letter-spacing: 0.05em;
+    color: var(--accent);
+  }
+  .topbtn {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--accent);
+    padding: 0.3em 0.8em;
+    cursor: pointer;
+    font-family: inherit;
+    border-radius: 3px;
+  }
+  .topbtn:hover { background: var(--user-bg); }
+  .templabel { display: inline-flex; align-items: center; }
+  .templabel:hover { background: transparent; }
+  #temp {
+    width: 3em;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0;
+  }
+  #temp:disabled { opacity: 0.4; cursor: not-allowed; }
+  #workdir {
+    width: 16em;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0;
+  }
+  #workdir:focus { outline: none; }
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 0.5em;
+  }
+  .msg {
+    margin: 1em 0;
+    padding: 0.6em 1.2em 0.8em;
+    border-radius: 4px;
+    line-height: 1.5;
+    font-size: 1em;
+  }
+  .msg .content {
+    white-space: pre-wrap;
+  }
+  .user {
+    background: var(--user-bg);
+    border-left: 3px solid var(--accent);
+  }
+  .assistant, .tool_call, .tool {
+    background: var(--paper);
+    border-left: 3px solid var(--rule);
+  }
+  .msg-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    margin-bottom: 0.4em;
+    font-size: 0.7em;
+  }
+  .role {
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    font-weight: bold;
+  }
+  .nav, .actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+  }
+  .actions { margin-left: 0.6em; }
+  .iconbtn {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--accent);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1em;
+    line-height: 1;
+    padding: 0.15em 0.45em;
+    border-radius: 3px;
+  }
+  .iconbtn:hover:not(:disabled) { background: var(--user-bg); }
+  .iconbtn:disabled { opacity: 0.3; cursor: default; }
+  .nav-label {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85em;
+    color: var(--muted);
+    min-width: 2em;
+    text-align: center;
+  }
+  form {
+    border-top: 1px solid var(--rule);
+    padding-top: 1em;
+    display: flex;
+    gap: 0.5em;
+  }
+  textarea {
+    flex: 1;
+    font-family: inherit;
+    /* iOS Safari auto-zooms when a tapped input has font-size < 16px.
+       Pinning to 16px here keeps the page from zooming on focus. */
+    font-size: 16px;
+    padding: 0.6em;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--paper);
+    color: var(--ink);
+    resize: vertical;
+    min-height: 3em;
+    max-height: 12em;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .sendbtn {
+    padding: 0 1.5em;
+    background: var(--accent);
+    color: var(--send-ink);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1em;
+    border-radius: 3px;
+  }
+  .stopbtn {
+    padding: 0 1.5em;
+    background: var(--stop);
+    color: var(--stop-ink);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1em;
+    border-radius: 3px;
+  }
+  .hint { font-size: 0.75em; color: var(--muted); margin-top: 0.3em; }
+  details.thinking {
+    border-left: 2px solid var(--rule);
+    padding: 0.2em 0.6em;
+    margin: 0.3em 0;
+    background: var(--user-bg);
+    border-radius: 3px;
+  }
+  details.thinking > summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.85em;
+    font-style: italic;
+    user-select: none;
+    padding: 0.1em 0;
+  }
+  details.thinking > summary:hover { color: var(--accent); }
+  details.thinking > .thinking-body {
+    color: var(--muted);
+    font-size: 0.92em;
+    white-space: pre-wrap;
+    margin-top: 0.3em;
+  }
+  /* Tool blocks (<bash>/<output>) render like thinking, but monospace. */
+  details.tool > .thinking-body {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.85em;
+  }
+  /* Approve-mode bar shown while the server waits for a decision. */
+  .approvebar {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    margin: 1em 0;
+    padding: 0.6em 1.2em;
+    background: var(--user-bg);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+  }
+  .approvebar-label {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    font-weight: bold;
+    white-space: nowrap;
+  }
+  .approvebar code {
+    flex: 1;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .streaming-marker {
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    background: var(--accent);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .edit-area {
+    width: 100%;
+    min-height: 5em;
+    font-family: inherit;
+    font-size: 1em;
+    padding: 0.5em;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--bg);
+    color: var(--ink);
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .edit-area:focus { outline: none; border-color: var(--accent); }
+  .edit-buttons { display: flex; gap: 0.4em; margin-top: 0.4em; }
+
+  /* --- chat → png export modal ------------------------------------------ */
+  .pngmodal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5em;
+  }
+  .pngmodal-backdrop[hidden] { display: none; }
+  .pngmodal {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    width: min(96vw, 1100px);
+    height: min(92vh, 900px);
+    display: flex;
+    flex-direction: column;
+    padding: 1em;
+    gap: 0.6em;
+  }
+  .pngmodal-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.8em;
+    flex-wrap: wrap;
+  }
+  .pngmodal-opts {
+    display: flex;
+    align-items: center;
+    gap: 0.9em;
+    flex-wrap: wrap;
+    font-size: 0.85em;
+    color: var(--muted);
+  }
+  .pngmodal-opts input[type=number],
+  .pngmodal-opts select {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    color: var(--ink);
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0.15em 0.3em;
+    border-radius: 3px;
+  }
+  .pngmodal-opts input[type=number] { width: 4.2em; }
+  .pngmodal-meta { font-size: 0.8em; color: var(--muted); }
+  .pngmodal-spacer { flex: 1; }
+  .pngmodal-note { font-size: 0.8em; color: var(--stop); }
+  .pngmodal-preview {
+    flex: 1;
+    overflow: auto;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--paper);
+    padding: 0.8em;
+  }
+  .pngmodal-preview canvas {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+  }
+
+  /* --- mobile --------------------------------------------------------- */
+  @media (max-width: 700px) {
+    main {
+      padding: 0.6em 0.8em;
+      /* honor iOS safe areas around the home-indicator/notch */
+      padding-left: max(0.8em, env(safe-area-inset-left));
+      padding-right: max(0.8em, env(safe-area-inset-right));
+      padding-bottom: max(0.6em, env(safe-area-inset-bottom));
+    }
+    header {
+      gap: 0.4em;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    header h1 {
+      font-size: 1.15em;
+      flex: 1;
+      min-width: 0;
+    }
+    .topbtn {
+      padding: 0.35em 0.6em;
+      font-size: 0.85em;
+    }
+    /* select on iOS doesn't honor padding the same way — give it a usable
+       tap target without making it visually larger than its neighbors. */
+    select.topbtn { font-size: 16px; padding: 0.25em 0.4em; }
+    .menubtn {
+      width: 2.1em;
+      height: 2.1em;
+      font-size: 1.2em;
+    }
+    /* On mobile the sidebar floats as an off-canvas drawer. .collapsed
+       keeps it slid out of view; opening flips translateX back to 0. */
+    aside {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: min(80vw, 280px);
+      transform: translateX(0);
+      transition: transform 0.18s ease;
+      z-index: 20;
+      box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
+    }
+    aside.collapsed {
+      /* Override the desktop `display: none` so we can animate instead. */
+      display: block;
+      transform: translateX(-100%);
+    }
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      z-index: 15;
+    }
+    .drawer-backdrop.show { display: block; }
+    /* Tighter chat bubbles to leave more room for the input. */
+    .msg { margin-bottom: 0.6em; }
+    textarea {
+      padding: 0.5em;
+      min-height: 2.6em;
+      max-height: 40dvh;
+    }
+    .sendbtn, .stopbtn { padding: 0 1em; font-size: 16px; }
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <h2>conversations</h2>
+  <div id="conv-list"></div>
+</aside>
+
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+<main>
+  <header>
+    <button class="topbtn menubtn" id="menu" title="toggle conversations" aria-label="toggle conversations">☰</button>
+    <h1>loom · chat</h1>
+    <span style="display:flex;gap:0.4em;flex-wrap:wrap;justify-content:flex-end;">
+      <select class="topbtn" id="model" title="which backend serves this conversation"></select>
+      <button class="topbtn" id="eos" title="when off, the model ignores stop tokens and runs until you hit stop"></button>
+      <button class="topbtn" id="greedy" title="greedy decoding — temperature 0, deterministic argmax. Recommended for the talkie / catwoman routes; turn off to sample at the temperature below."></button>
+      <label class="topbtn templabel" title="sampling temperature (ignored while greedy is on)">temp&nbsp;<input type="number" id="temp" min="0" max="2" step="0.05" /></label>
+      <button class="topbtn" id="send-mode" title="which key submits the message"></button>
+      <button class="topbtn" id="tools" title="let the model call tools — bash commands run in a bwrap sandbox on the server"></button>
+      <button class="topbtn" id="web" title="let the model fetch web pages — the server reads them in headless chromium (zendriver) and hands back the text"></button>
+      <label class="topbtn templabel" id="workdir-label" title="working directory for this chat's bash tool (bwrap sandbox), saved per conversation" hidden>dir&nbsp;<input type="text" id="workdir" spellcheck="false" autocomplete="off"></label>
+      <button class="topbtn" id="approve" title="when on, each tool call pauses for your approval before it runs" hidden></button>
+      <button class="topbtn" id="theme" title="toggle theme">☾</button>
+      <button class="topbtn" id="new-chat">new chat</button>
+      <button class="topbtn" id="download-chat" title="render the chat to a tall png and download it">png</button>
+    </span>
+  </header>
+
+  <div id="log"></div>
+
+  <form id="form">
+    <textarea id="input" placeholder="Address the model in any manner you please."></textarea>
+    <button type="submit" class="sendbtn" id="send">send</button>
+    <button type="button" class="stopbtn" id="stop" hidden>stop</button>
+  </form>
+  <div class="hint">No KV cache — replies stream at ~10 tok/s.</div>
+</main>
+
+<div class="pngmodal-backdrop" id="png-modal" hidden>
+  <div class="pngmodal">
+    <div class="pngmodal-bar">
+      <span class="pngmodal-opts">
+        <label>columns <input type="number" id="png-cols" min="1" max="6" step="1" value="1"></label>
+        <label>skip first <input type="number" id="png-skip" min="0" step="1" value="0"></label>
+        <label>width <input type="number" id="png-width" min="240" max="1200" step="20" value="560"></label>
+        <label>scale <select id="png-scale">
+          <option value="1">1×</option>
+          <option value="2" selected>2×</option>
+          <option value="3">3×</option>
+        </select></label>
+        <label>theme <select id="png-theme">
+          <option value="" selected>current</option>
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+          <option value="black">black</option>
+        </select></label>
+        <label><input type="checkbox" id="png-thinking"> include thinking</label>
+      </span>
+      <span class="pngmodal-spacer"></span>
+      <span class="pngmodal-meta" id="png-meta"></span>
+      <button class="topbtn" id="png-download">download png</button>
+      <button class="topbtn" id="png-close">close</button>
+    </div>
+    <div class="pngmodal-note" id="png-note" hidden></div>
+    <div class="pngmodal-preview" id="png-preview"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log"), input = $("input"), form = $("form");
+const sendBtn = $("send"), stopBtn = $("stop");
+const convList = $("conv-list");
+const themeBtn = $("theme");
+const eosBtn = $("eos");
+const toolsBtn = $("tools");
+const webBtn = $("web");
+const greedyBtn = $("greedy");
+const tempInput = $("temp");
+const sendModeBtn = $("send-mode");
+const modelSel = $("model");
+const sidebar = $("sidebar");
+const drawerBackdrop = $("drawer-backdrop");
+const menuBtn = $("menu");
+
+// Sidebar toggle: works at all sizes. On desktop, `collapsed` hides the
+// pane; on mobile it slides out via transform (see CSS). Choice is persisted
+// per device class — desktop and mobile remember separately so toggling on
+// one doesn't surprise you on the other.
+const SIDEBAR_KEY = "talkie_sidebar";  // "open" | "collapsed"
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+function applySidebarState(state) {
+  if (state === "collapsed") {
+    sidebar.classList.add("collapsed");
+    drawerBackdrop.classList.remove("show");
+  } else {
+    sidebar.classList.remove("collapsed");
+    if (isMobileViewport()) drawerBackdrop.classList.add("show");
+    else drawerBackdrop.classList.remove("show");
+  }
+}
+function initSidebar() {
+  const saved = localStorage.getItem(SIDEBAR_KEY);
+  // Default: open on desktop, collapsed on mobile so the chat owns the screen.
+  const state = saved || (isMobileViewport() ? "collapsed" : "open");
+  applySidebarState(state);
+}
+initSidebar();
+
+menuBtn.onclick = () => {
+  const next = sidebar.classList.contains("collapsed") ? "open" : "collapsed";
+  localStorage.setItem(SIDEBAR_KEY, next);
+  applySidebarState(next);
+};
+drawerBackdrop.onclick = () => {
+  localStorage.setItem(SIDEBAR_KEY, "collapsed");
+  applySidebarState("collapsed");
+};
+// If the user rotates / resizes across the breakpoint, re-evaluate so
+// the backdrop only shows when actually in mobile drawer mode.
+window.addEventListener("resize", () => {
+  const state = sidebar.classList.contains("collapsed") ? "collapsed" : "open";
+  applySidebarState(state);
+});
+
+// Active model id for the current conversation. Populated by loadModels()
+// + loadCurrentModel(); changing the dropdown POSTs to /model so the choice
+// persists per-conversation in chats.jsonl.
+let currentModel = null;
+let modelsLoaded = false;
+
+let disableEos = localStorage.getItem("talkie_disable_eos") === "1";
+function renderEosBtn() {
+  eosBtn.textContent = disableEos ? "eos: off" : "eos: on";
+}
+renderEosBtn();
+eosBtn.onclick = () => {
+  disableEos = !disableEos;
+  localStorage.setItem("talkie_disable_eos", disableEos ? "1" : "0");
+  renderEosBtn();
+};
+
+// Tool calling. When on, requests carry tools:true and the model may emit
+// <bash>...</bash>, which the server executes in a bwrap sandbox before
+// letting the model continue the same reply. Off by default. The sandbox
+// working directory is per-conversation (see loadWorkdir) and the field
+// only shows while tools are on.
+let toolsEnabled = localStorage.getItem("talkie_tools") === "1";
+let approveEnabled = localStorage.getItem("talkie_approve") === "1";
+const workdirLabel = $("workdir-label"), workdirInput = $("workdir");
+const approveBtn = $("approve");
+function renderToolsBtn() {
+  toolsBtn.textContent = toolsEnabled ? "tools: on" : "tools: off";
+  workdirLabel.hidden = !toolsEnabled;
+  approveBtn.hidden = !toolsEnabled;
+  approveBtn.textContent = approveEnabled ? "approve: on" : "approve: off";
+}
+renderToolsBtn();
+toolsBtn.onclick = () => {
+  toolsEnabled = !toolsEnabled;
+  localStorage.setItem("talkie_tools", toolsEnabled ? "1" : "0");
+  renderToolsBtn();
+};
+approveBtn.onclick = () => {
+  approveEnabled = !approveEnabled;
+  localStorage.setItem("talkie_approve", approveEnabled ? "1" : "0");
+  renderToolsBtn();
+};
+
+// Web tool. Independent of the bash toggle: when on, requests carry
+// web:true and the model may fetch pages (<web>url</web>, or the native
+// web() function for tool-calling models), which the server reads in
+// headless chromium via zendriver and feeds back as page text.
+// Off by default.
+let webEnabled = localStorage.getItem("talkie_web") === "1";
+function renderWebBtn() {
+  webBtn.textContent = webEnabled ? "web: on" : "web: off";
+}
+renderWebBtn();
+webBtn.onclick = () => {
+  webEnabled = !webEnabled;
+  localStorage.setItem("talkie_web", webEnabled ? "1" : "0");
+  renderWebBtn();
+};
+
+async function loadWorkdir() {
+  // Reflect this conversation's bash workdir into the header field.
+  try {
+    const r = await fetch("/workdir?conversation_id=" + cid);
+    const data = await r.json();
+    workdirInput.value = data.workdir;
+  } catch (e) {
+    console.warn("loadWorkdir failed", e);
+  }
+}
+
+workdirInput.onchange = async () => {
+  const wd = workdirInput.value.trim();
+  if (!wd) { loadWorkdir(); return; }
+  try {
+    const r = await fetch("/workdir", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({conversation_id: cid, workdir: wd}),
+    });
+    const data = await r.json();
+    if (data.workdir) {
+      workdirInput.value = data.workdir;  // canonicalized by the server
+    } else {
+      loadWorkdir();  // rejected (not a directory) — revert the field
+    }
+  } catch (e) {
+    console.warn("save workdir failed", e);
+    loadWorkdir();
+  }
+};
+
+// Sampling controls. `greedy` on ⇒ temperature 0 (deterministic argmax); the
+// talkie/catwoman base models want this, so it defaults on. Turning it off
+// samples at `temperature`. Both persist globally in localStorage. The
+// effective temperature (0 when greedy) is sent with every generate request.
+let greedy = (localStorage.getItem("talkie_greedy") ?? "1") === "1";
+let temperature = parseFloat(localStorage.getItem("talkie_temp"));
+if (!Number.isFinite(temperature)) temperature = 0.7;
+function renderSampling() {
+  greedyBtn.textContent = greedy ? "greedy: on" : "greedy: off";
+  tempInput.value = temperature;
+  tempInput.disabled = greedy;  // temperature is ignored while greedy is on
+}
+renderSampling();
+greedyBtn.onclick = () => {
+  greedy = !greedy;
+  localStorage.setItem("talkie_greedy", greedy ? "1" : "0");
+  renderSampling();
+};
+tempInput.onchange = () => {
+  let v = parseFloat(tempInput.value);
+  if (!Number.isFinite(v) || v < 0) v = 0;
+  if (v > 2) v = 2;
+  temperature = v;
+  localStorage.setItem("talkie_temp", String(v));
+  renderSampling();
+};
+
+// "1" = plain Enter submits (Shift+Enter inserts newline)
+// "0" = Shift+Enter submits (plain Enter inserts newline)
+let sendOnEnter = localStorage.getItem("talkie_send_on_enter") === "1";
+function renderSendModeBtn() {
+  sendModeBtn.textContent = sendOnEnter ? "send: enter" : "send: shift+enter";
+  const tail = sendOnEnter
+    ? " (Enter to send, Shift+Enter for newline.)"
+    : " (Shift+Enter to send, Enter for newline.)";
+  input.placeholder = "Address the model in any manner you please." + tail;
+}
+renderSendModeBtn();
+sendModeBtn.onclick = () => {
+  sendOnEnter = !sendOnEnter;
+  localStorage.setItem("talkie_send_on_enter", sendOnEnter ? "1" : "0");
+  renderSendModeBtn();
+};
+
+function applyTheme(t) {
+  // t in {"light","dark",null}; null = follow system
+  if (t) document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  const dark = (t === "dark") ||
+    (!t && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  themeBtn.textContent = dark ? "☼" : "☾";
+}
+applyTheme(localStorage.getItem("talkie_theme"));
+themeBtn.onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme") ||
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  localStorage.setItem("talkie_theme", next);
+  applyTheme(next);
+};
+
+// crypto.randomUUID is unavailable on insecure HTTP origins (e.g. LAN IPs).
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, "0"));
+  return `${h.slice(0,4).join("")}-${h.slice(4,6).join("")}-${h.slice(6,8).join("")}-${h.slice(8,10).join("")}-${h.slice(10,16).join("")}`;
+}
+let cid = localStorage.getItem("talkie_cid") || uuid();
+localStorage.setItem("talkie_cid", cid);
+
+let currentRequestId = null;   // server-side request id (for /stop)
+let currentAbort = null;       // client-side AbortController
+let thread = [];               // active thread from server
+
+function setBusy(busy) {
+  sendBtn.hidden = busy;
+  stopBtn.hidden = !busy;
+}
+
+stopBtn.onclick = async () => {
+  if (currentRequestId) {
+    try {
+      await fetch("/stop", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({request_id: currentRequestId}),
+      });
+    } catch {}
+  }
+  if (currentAbort) {
+    try { currentAbort.abort(); } catch {}
+  }
+};
+
+function makeIconBtn(text, onclick, title) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "iconbtn";
+  b.textContent = text;
+  b.onclick = onclick;
+  if (title) b.title = title;
+  return b;
+}
+
+// --- collapsible blocks: thinking + tool calls -----------------------------
+// Models that emit `<think>...</think>` (DeepSeek/Qwen-style) get those
+// regions rendered as a collapsible <details open> block, default visible
+// but foldable. With tools enabled the assistant text can also contain
+// <bash>...</bash>, <web>...</web>, and <output>...</output> blocks,
+// rendered the same way but monospace. The streaming path uses a small
+// state machine so <think>
+// tags straddling SSE chunks still detect cleanly; tool blocks show as raw
+// tags during streaming and render properly once loadHistory() re-renders
+// after the stream ends.
+
+const THINK_OPEN = "<think>";
+const THINK_CLOSE = "</think>";
+// [open tag, close tag, segment kind, details label]
+const BLOCK_TAGS = [
+  ["<think>", "</think>", "think", "thinking"],
+  ["<bash>", "</bash>", "bash", "bash"],
+  ["<web>", "</web>", "web", "web"],
+  ["<output>", "</output>", "output", "output"],
+];
+
+function makeThinkingDetails(label) {
+  const d = document.createElement("details");
+  d.className = "thinking" + (label === "thinking" ? "" : " tool");
+  d.open = true;
+  const s = document.createElement("summary");
+  s.textContent = label;
+  d.appendChild(s);
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  d.appendChild(body);
+  return {details: d, body};
+}
+
+function parseSegments(text) {
+  // Split message text into [{kind: "text"|"think"|"bash"|"output", text}]
+  // segments, treating an unterminated opening tag as running to the end.
+  const segs = [];
+  let i = 0;
+  while (i < text.length) {
+    let startIdx = -1, tag = null;
+    for (const t of BLOCK_TAGS) {
+      const idx = text.indexOf(t[0], i);
+      if (idx !== -1 && (startIdx === -1 || idx < startIdx)) {
+        startIdx = idx;
+        tag = t;
+      }
+    }
+    if (startIdx === -1) {
+      segs.push({kind: "text", text: text.slice(i)});
+      break;
+    }
+    if (startIdx > i) segs.push({kind: "text", text: text.slice(i, startIdx)});
+    const contentStart = startIdx + tag[0].length;
+    const endIdx = text.indexOf(tag[1], contentStart);
+    segs.push({
+      kind: tag[2],
+      text: endIdx === -1 ? text.slice(contentStart) : text.slice(contentStart, endIdx),
+    });
+    i = endIdx === -1 ? text.length : endIdx + tag[1].length;
+  }
+  return segs;
+}
+
+function renderContentInto(el, text) {
+  // Replace think/bash/output regions (or unterminated ones) with
+  // collapsible details elements. The rest renders as plain text.
+  for (const seg of parseSegments(text)) {
+    if (seg.kind === "text") {
+      el.appendChild(document.createTextNode(seg.text));
+      continue;
+    }
+    const label = BLOCK_TAGS.find(t => t[2] === seg.kind)[3];
+    const {details, body} = makeThinkingDetails(label);
+    body.textContent = seg.text;
+    el.appendChild(details);
+  }
+}
+
+// Map from a .content element → its live streaming state (so /continue
+// can resume mid-message and pick up the right destination).
+const STREAM_STATE = new WeakMap();
+
+function partialTagSuffix(buf, tag) {
+  // Return the length of a suffix of `buf` that could be a prefix of `tag`,
+  // so the streamer holds it back until the rest arrives.
+  const max = Math.min(buf.length, tag.length - 1);
+  for (let len = max; len > 0; len--) {
+    if (tag.startsWith(buf.slice(buf.length - len))) return len;
+  }
+  return 0;
+}
+
+function initStreamState(contentEl) {
+  // Decide where the next streamed chunk should go based on current DOM:
+  // if the last child is a thinking details, assume it's still open and
+  // continue inside its body; otherwise stream into the main content.
+  const last = contentEl.lastElementChild;
+  if (last && last.classList.contains("thinking")) {
+    const body = last.querySelector(".thinking-body");
+    return {mode: "thinking", current: body, pending: ""};
+  }
+  return {mode: "main", current: contentEl, pending: ""};
+}
+
+function streamAppend(contentEl, cursor, text) {
+  let state = STREAM_STATE.get(contentEl);
+  if (!state) {
+    state = initStreamState(contentEl);
+    STREAM_STATE.set(contentEl, state);
+  }
+  state.pending += text;
+
+  while (true) {
+    const tag = state.mode === "main" ? THINK_OPEN : THINK_CLOSE;
+    const idx = state.pending.indexOf(tag);
+    if (idx === -1) {
+      // No complete tag boundary in the buffer; flush everything except a
+      // possible partial-tag suffix.
+      const tail = partialTagSuffix(state.pending, tag);
+      const stable = state.pending.slice(0, state.pending.length - tail);
+      if (stable) {
+        cursor.remove();
+        state.current.appendChild(document.createTextNode(stable));
+        state.current.appendChild(cursor);
+      }
+      state.pending = state.pending.slice(state.pending.length - tail);
+      return;
+    }
+
+    const before = state.pending.slice(0, idx);
+    state.pending = state.pending.slice(idx + tag.length);
+    if (before) {
+      cursor.remove();
+      state.current.appendChild(document.createTextNode(before));
+    }
+
+    if (state.mode === "main") {
+      const {details, body} = makeThinkingDetails("thinking");
+      contentEl.appendChild(details);
+      state.current = body;
+      state.mode = "thinking";
+    } else {
+      state.current = contentEl;
+      state.mode = "main";
+    }
+    cursor.remove();
+    state.current.appendChild(cursor);
+  }
+}
+
+function clearStreamState(contentEl) {
+  STREAM_STATE.delete(contentEl);
+}
+
+function makeMsgEl(m, isLast) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + m.role;
+  if (m.id) wrap.dataset.id = m.id;
+
+  const header = document.createElement("div");
+  header.className = "msg-header";
+
+  const isToolMsg = m.role === "tool_call" || m.role === "tool";
+
+  const role = document.createElement("span");
+  role.className = "role";
+  role.textContent = m.role === "tool_call" ? (m.tool || "bash") : m.role === "tool" ? "output" : m.role;
+  header.appendChild(role);
+
+  if (m.id && m.siblings && m.siblings.length > 1) {
+    const nav = document.createElement("span");
+    nav.className = "nav";
+    const idx = m.sibling_index, total = m.siblings.length;
+
+    const prev = makeIconBtn("◀", () => selectSibling(m.siblings[idx - 1]));
+    prev.disabled = idx === 0;
+
+    const label = document.createElement("span");
+    label.className = "nav-label";
+    label.textContent = `${idx + 1}/${total}`;
+
+    const next = makeIconBtn("▶", () => selectSibling(m.siblings[idx + 1]));
+    next.disabled = idx === total - 1;
+
+    nav.append(prev, label, next);
+    header.appendChild(nav);
+  }
+
+  if (m.id) {
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    if (m.role === "tool_call") {
+      // Tool turns branch like any other: edit re-runs the new command and
+      // regenerates downstream; ↻ re-runs the same command.
+      actions.appendChild(makeIconBtn("✎", () => enterEditMode(wrap, m), "edit command (re-runs + regenerates)"));
+      actions.appendChild(makeIconBtn("↻", () => rerunTool(m.id), "re-run command + regenerate"));
+    } else if (m.role === "tool") {
+      actions.appendChild(makeIconBtn("✎", () => enterEditMode(wrap, m), "edit output (branches, no re-run)"));
+      actions.appendChild(makeIconBtn("↻", () => rerunTool(m.parent_id), "re-run command + regenerate"));
+    } else {
+      actions.appendChild(makeIconBtn("✎", () => enterEditMode(wrap, m), "edit"));
+      if (m.role === "assistant") {
+        actions.appendChild(makeIconBtn("⏵", () => continueMsg(m.id), "continue"));
+        actions.appendChild(makeIconBtn("↻", () => regenerate(m.id), "regenerate"));
+      }
+    }
+    header.appendChild(actions);
+  }
+
+  wrap.appendChild(header);
+
+  if (isToolMsg) {
+    // Tool call/result: collapsible monospace block inside a .content div
+    // (edit mode hides .content and swaps in a textarea).
+    const content = document.createElement("div");
+    content.className = "content";
+    const {details, body} = makeThinkingDetails(m.role === "tool_call" ? (m.tool || "bash") : "output");
+    body.textContent = m.content || "";
+    content.appendChild(details);
+    wrap.appendChild(content);
+    return wrap;
+  }
+
+  const content = document.createElement("div");
+  content.className = "content";
+  renderContentInto(content, m.content || "");
+  wrap.appendChild(content);
+
+  return wrap;
+}
+
+function enterEditMode(wrap, msg) {
+  if (wrap.querySelector(".edit-area")) return;
+  const content = wrap.querySelector(".content");
+  const original = msg.content;
+  content.style.display = "none";
+
+  const ta = document.createElement("textarea");
+  ta.className = "edit-area";
+  ta.value = original;
+
+  const buttons = document.createElement("div");
+  buttons.className = "edit-buttons";
+
+  const cleanup = () => {
+    ta.remove();
+    buttons.remove();
+    content.style.display = "";
+  };
+
+  const save = makeIconBtn("save", async () => {
+    const newContent = ta.value;
+    if (!newContent.trim() || newContent === original) {
+      cleanup();
+      return;
+    }
+    save.disabled = true;
+    cancelBtn.disabled = true;
+
+    if (msg.role === "user") {
+      cleanup();
+      const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+      log.appendChild(ghost);
+      ghost.scrollIntoView({block: "end"});
+      await streamInto(
+        "/branch_user",
+        {conversation_id: cid, user_msg_id: msg.id, new_content: newContent},
+        ghost,
+      );
+    } else if (msg.role === "tool_call") {
+      // Edited command: server re-runs it and regenerates the downstream
+      // reply. Append the new call bubble locally; ids settle on reload.
+      cleanup();
+      const tcEl = makeMsgEl({role: "tool_call", content: newContent, id: null, tool: msg.tool}, false);
+      log.appendChild(tcEl);
+      const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+      log.appendChild(ghost);
+      ghost.scrollIntoView({block: "end"});
+      await streamInto(
+        "/branch_tool_call",
+        {conversation_id: cid, tool_call_msg_id: msg.id, new_content: newContent},
+        ghost,
+      );
+    } else if (msg.role === "tool") {
+      try {
+        await fetch("/edit_tool", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            conversation_id: cid,
+            tool_msg_id: msg.id,
+            new_content: newContent,
+          }),
+        });
+      } finally {
+        await loadHistory();
+        await loadConvs();
+      }
+    } else {
+      try {
+        await fetch("/edit_assistant", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            conversation_id: cid,
+            assistant_msg_id: msg.id,
+            new_content: newContent,
+          }),
+        });
+      } finally {
+        await loadHistory();
+        await loadConvs();
+      }
+    }
+  }, "save");
+
+  const cancelBtn = makeIconBtn("cancel", cleanup, "cancel");
+
+  buttons.append(save, cancelBtn);
+  wrap.appendChild(ta);
+  wrap.appendChild(buttons);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cleanup();
+    } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      save.click();
+    }
+  });
+}
+
+function renderThread() {
+  log.innerHTML = "";
+  for (let i = 0; i < thread.length; i++) {
+    log.appendChild(makeMsgEl(thread[i], i === thread.length - 1));
+  }
+}
+
+async function loadHistory() {
+  const r = await fetch("/history?conversation_id=" + cid);
+  thread = await r.json();
+  renderThread();
+  if (log.lastChild) log.lastChild.scrollIntoView({block: "end"});
+}
+
+async function loadConvs() {
+  const r = await fetch("/conversations");
+  const convs = await r.json();
+  convList.innerHTML = "";
+  for (const c of convs) {
+    const el = document.createElement("div");
+    el.className = "conv" + (c.id === cid ? " active" : "");
+    el.textContent = c.first_user_msg || "(empty)";
+    el.title = c.first_user_msg || "";
+    el.onclick = () => {
+      cid = c.id;
+      localStorage.setItem("talkie_cid", cid);
+      loadHistory();
+      loadConvs();
+      loadCurrentModel();
+      loadWorkdir();
+      // On mobile the drawer covers the chat — collapse it so the user
+      // lands on the conversation they just picked.
+      if (isMobileViewport()) {
+        localStorage.setItem(SIDEBAR_KEY, "collapsed");
+        applySidebarState("collapsed");
+      }
+    };
+    convList.appendChild(el);
+  }
+}
+
+async function loadModels() {
+  // Populate the dropdown once; reused across conversations.
+  if (modelsLoaded) return;
+  try {
+    const r = await fetch("/models");
+    const data = await r.json();
+    modelSel.innerHTML = "";
+    for (const m of data.models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      modelSel.appendChild(opt);
+    }
+    currentModel = currentModel || data.default;
+    modelSel.value = currentModel;
+    modelsLoaded = true;
+  } catch (e) {
+    console.warn("loadModels failed", e);
+  }
+}
+
+async function loadCurrentModel() {
+  // Read which model this conversation is using and reflect it in the UI.
+  try {
+    const r = await fetch("/model?conversation_id=" + cid);
+    const data = await r.json();
+    currentModel = data.model;
+    if (modelsLoaded) modelSel.value = currentModel;
+  } catch (e) {
+    console.warn("loadCurrentModel failed", e);
+  }
+}
+
+modelSel.onchange = async () => {
+  const next = modelSel.value;
+  currentModel = next;
+  try {
+    await fetch("/model", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({conversation_id: cid, model: next}),
+    });
+  } catch (e) {
+    console.warn("save model failed", e);
+  }
+};
+
+async function selectSibling(msgId) {
+  await fetch("/select", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({conversation_id: cid, msg_id: msgId}),
+  });
+  await loadHistory();
+}
+
+$("new-chat").onclick = async () => {
+  cid = uuid();
+  localStorage.setItem("talkie_cid", cid);
+  thread = [];
+  renderThread();
+  loadConvs();
+  loadWorkdir();  // new conversation → server default workdir
+  // Anchor the new conversation to whichever model is currently picked so
+  // it sticks before the first message is sent.
+  if (currentModel) {
+    try {
+      await fetch("/model", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({conversation_id: cid, model: currentModel}),
+      });
+    } catch (e) {
+      console.warn("save model on new chat failed", e);
+    }
+  }
+};
+
+input.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const ctrlOrCmd = e.ctrlKey || e.metaKey;
+  // Ctrl/Cmd+Enter always submits. Otherwise it depends on the toggle:
+  //   sendOnEnter: plain Enter submits, Shift+Enter inserts newline.
+  //   !sendOnEnter: Shift+Enter submits, plain Enter inserts newline.
+  const submit = ctrlOrCmd || (sendOnEnter ? !e.shiftKey : e.shiftKey);
+  if (submit) {
+    e.preventDefault();
+    if (!sendBtn.hidden) form.requestSubmit();
+  }
+});
+
+async function streamInto(url, body, placeholderEl) {
+  setBusy(true);
+  currentAbort = new AbortController();
+  // Mutable: native tool calling can split one reply into several bubbles —
+  // after a tool_msg event, subsequent deltas go into a fresh assistant one.
+  let contentEl = placeholderEl.querySelector(".content");
+  let cursor = document.createElement("span");
+  cursor.className = "streaming-marker";
+  let approvalBar = null;  // live approve/reject bar, if any
+  // Seed state from the existing DOM (handles /continue: if the last child
+  // is an open thinking block, the cursor + new tokens go inside it).
+  const initialState = initStreamState(contentEl);
+  STREAM_STATE.set(contentEl, initialState);
+  initialState.current.appendChild(cursor);
+
+  // Always carry the current EOS toggle state, sampling temperature (0 when
+  // greedy is on), and the chosen model.
+  body = {disable_eos: disableEos, temperature: greedy ? 0 : temperature, model: currentModel, tools: toolsEnabled, web: webEnabled, approve: approveEnabled, ...body};
+
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+      signal: currentAbort.signal,
+    });
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    outer: while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const ev of events) {
+        const line = ev.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = JSON.parse(line.slice(5).trim());
+        if (data.type === "start") {
+          currentRequestId = data.request_id;
+        } else if (data.type === "delta") {
+          streamAppend(contentEl, cursor, data.text);
+          contentEl.closest(".msg").scrollIntoView({block: "end"});
+        } else if (data.type === "tool_msg") {
+          // A persisted tool_call/tool message: show its bubble, then (for
+          // the result) open a fresh assistant bubble for the next round.
+          cursor.remove();
+          clearStreamState(contentEl);
+          // Drop the current bubble if nothing was ever streamed into it
+          // (happens when a tool result is the first event of a stream).
+          const curBubble = contentEl.closest(".msg");
+          if (curBubble && !contentEl.textContent.trim() &&
+              !contentEl.querySelector("details")) {
+            curBubble.remove();
+          }
+          const el = makeMsgEl({role: data.role, content: data.content, id: data.id, tool: data.tool}, false);
+          log.appendChild(el);
+          el.scrollIntoView({block: "end"});
+          if (data.role === "tool") {
+            const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+            log.appendChild(ghost);
+            ghost.scrollIntoView({block: "end"});
+            contentEl = ghost.querySelector(".content");
+            cursor = document.createElement("span");
+            cursor.className = "streaming-marker";
+            const st = initStreamState(contentEl);
+            STREAM_STATE.set(contentEl, st);
+            st.current.appendChild(cursor);
+          }
+        } else if (data.type === "tool_propose") {
+          // Approve mode: the server is parked waiting for a decision.
+          const bar = document.createElement("div");
+          bar.className = "approvebar";
+          const label = document.createElement("span");
+          label.className = "approvebar-label";
+          label.textContent = "run this?";
+          const code = document.createElement("code");
+          code.textContent = data.content;
+          const ok = makeIconBtn("approve", () => decide(true), "run it");
+          const no = makeIconBtn("reject", () => decide(false), "don't run it");
+          const decide = async (v) => {
+            ok.disabled = no.disabled = true;
+            try {
+              await fetch("/approve", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({request_id: currentRequestId, approved: v}),
+              });
+            } catch {}
+            bar.remove();
+            approvalBar = null;
+          };
+          bar.append(label, code, ok, no);
+          log.appendChild(bar);
+          bar.scrollIntoView({block: "end"});
+          approvalBar = bar;
+        } else if (data.type === "done") {
+          break outer;
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      const state = STREAM_STATE.get(contentEl);
+      const target = state ? state.current : contentEl;
+      target.appendChild(document.createTextNode("\n[error: " + err.message + "]"));
+    }
+  } finally {
+    cursor.remove();
+    clearStreamState(contentEl);
+    if (approvalBar) approvalBar.remove();
+    currentRequestId = null;
+    currentAbort = null;
+    setBusy(false);
+    await loadHistory();
+    await loadConvs();
+  }
+}
+
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = "";
+
+  // Determine parent_id: tip of current thread.
+  const parentId = thread.length ? thread[thread.length - 1].id : null;
+
+  // Append user msg locally and a streaming assistant placeholder.
+  const userEl = makeMsgEl({role: "user", content: msg, id: null}, false);
+  log.appendChild(userEl);
+  const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+  log.appendChild(ghost);
+  ghost.scrollIntoView({block: "end"});
+
+  await streamInto("/chat", {conversation_id: cid, parent_id: parentId, message: msg}, ghost);
+};
+
+async function regenerate(assistantId) {
+  if (!sendBtn.hidden === false) return;  // already busy
+  const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+  log.appendChild(ghost);
+  ghost.scrollIntoView({block: "end"});
+  await streamInto("/regenerate", {conversation_id: cid, assistant_id: assistantId}, ghost);
+}
+
+async function continueMsg(assistantId) {
+  if (!sendBtn.hidden === false) return;
+  // Stream into the existing bubble — new tokens append to existing content.
+  const el = log.querySelector(`[data-id="${assistantId}"]`);
+  if (!el) return;
+  el.scrollIntoView({block: "end"});
+  await streamInto("/continue", {conversation_id: cid, assistant_msg_id: assistantId}, el);
+}
+
+async function rerunTool(toolCallId) {
+  if (!sendBtn.hidden === false) return;
+  // Server re-executes the command into a sibling tool msg and regenerates
+  // the downstream reply. The tool_msg prelude bubbles the fresh result.
+  const ghost = makeMsgEl({role: "assistant", content: "", id: null}, true);
+  log.appendChild(ghost);
+  ghost.scrollIntoView({block: "end"});
+  await streamInto("/rerun_tool", {conversation_id: cid, tool_call_msg_id: toolCallId}, ghost);
+}
+
+// Order matters: read the saved model for this conversation before we
+// populate the dropdown, so loadModels sets the right initial value.
+(async () => {
+  await loadCurrentModel();
+  await loadModels();
+  loadHistory();
+  loadConvs();
+  loadWorkdir();
+})();
+
+// --- chat → png export ------------------------------------------------------
+// Renders the active thread to a canvas (no DOM rasterization — text is
+// measured and wrapped manually with the same fonts/colors as the page),
+// so the result is a clean tall png at whatever scale the user picks.
+// "columns" splits the thread into sequential newspaper-style columns to
+// keep very long chats under browser canvas height limits.
+
+const PNG_THEMES = {
+  light: {bg: "#f4ede0", paper: "#fbf6ec", ink: "#2b2520", rule: "#c9b89a",
+          userBg: "#e8e1d1", accent: "#6b4423", muted: "#888888"},
+  dark:  {bg: "#15110d", paper: "#1f1a14", ink: "#d8ccb2", rule: "#4a3e2d",
+          userBg: "#2a221a", accent: "#c9a06b", muted: "#8a8070"},
+  // Pure grayscale dark mode — no tan, higher contrast.
+  black: {bg: "#000000", paper: "#141414", ink: "#e8e8e8", rule: "#3a3a3a",
+          userBg: "#1e1e1e", accent: "#b0b0b0", muted: "#7a7a7a"},
+};
+
+// Layout metrics (css px, before scale) mirroring the .msg styles.
+const PNG_FONT = '"Georgia", "Times New Roman", serif';
+const PNG_FS = 16, PNG_LH = 24;          // body text
+const PNG_ROLE_FS = 11, PNG_ROLE_LH = 16; // small uppercase role header
+const PNG_PAD_X = 19, PNG_PAD_TOP = 10, PNG_PAD_BOTTOM = 13;
+const PNG_BORDER = 3, PNG_HEADER_GAP = 6;
+const PNG_MSG_GAP = 16, PNG_PAGE_PAD = 24, PNG_COL_GAP = 24;
+const PNG_THINK_INDENT = 14;
+// Chrome's canvas hard limit is 32767px per axis; stay safely below.
+const PNG_MAX_DIM = 32000;
+
+const pngModal = $("png-modal"), pngPreview = $("png-preview"),
+      pngNote = $("png-note"), pngMeta = $("png-meta");
+const pngColsIn = $("png-cols"), pngWidthIn = $("png-width"),
+      pngScaleSel = $("png-scale"), pngThemeSel = $("png-theme"),
+      pngThinkingIn = $("png-thinking"), pngSkipIn = $("png-skip");
+let pngCanvas = null;  // last rendered full-res canvas, used by download
+
+function pngPalette() {
+  const t = pngThemeSel.value;
+  if (t) return PNG_THEMES[t];
+  const attr = document.documentElement.getAttribute("data-theme");
+  const dark = attr === "dark" ||
+    (!attr && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  return dark ? PNG_THEMES.dark : PNG_THEMES.light;
+}
+
+function pngFont(kind) {
+  switch (kind) {
+    case "role":       return `bold ${PNG_ROLE_FS}px ${PNG_FONT}`;
+    case "thinklabel": return `italic ${PNG_ROLE_FS}px ${PNG_FONT}`;
+    case "think":      return `italic ${PNG_FS}px ${PNG_FONT}`;
+    case "tool":       return `${PNG_FS - 2}px ui-monospace, Menlo, Consolas, monospace`;
+    default:           return `${PNG_FS}px ${PNG_FONT}`;
+  }
+}
+
+function pngWrap(ctx, text, maxWidth) {
+  // Greedy word wrap preserving explicit newlines; over-long unbroken
+  // words are hard-split by characters so they can't overflow the bubble.
+  const out = [];
+  for (const para of text.split("\n")) {
+    if (para === "") { out.push(""); continue; }
+    let line = "";
+    for (let word of para.split(/\s+/).filter(Boolean)) {
+      while (ctx.measureText(word).width > maxWidth && word.length > 1) {
+        let cut = word.length - 1;
+        while (cut > 1 && ctx.measureText(word.slice(0, cut)).width > maxWidth) cut--;
+        if (line) { out.push(line); line = ""; }
+        out.push(word.slice(0, cut));
+        word = word.slice(cut);
+      }
+      const trial = line ? line + " " + word : word;
+      if (line && ctx.measureText(trial).width > maxWidth) {
+        out.push(line);
+        line = word;
+      } else {
+        line = trial;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function pngLayoutMessage(ctx, m, contentWidth, includeThinking) {
+  // Build the styled line list for one message and compute its box height.
+  // think segments honor the checkbox; bash/output tool blocks always render
+  // (monospace, muted, indented) since they're part of the actual reply.
+  const isToolMsg = m.role === "tool_call" || m.role === "tool";
+  const roleLabel = m.role === "tool_call" ? "BASH" : m.role === "tool" ? "OUTPUT" : m.role.toUpperCase();
+  const lines = [{kind: "role", text: roleLabel}];
+  if (isToolMsg) {
+    ctx.font = pngFont("tool");
+    for (const l of pngWrap(ctx, m.content || "", contentWidth - PNG_THINK_INDENT)) {
+      lines.push({kind: "tool", text: l});
+    }
+  } else for (const seg of parseSegments(m.content || "")) {
+    if (seg.kind === "think" && !includeThinking) continue;
+    if (seg.kind !== "text" && seg.text.trim()) {
+      lines.push({kind: "thinklabel", text: seg.kind === "think" ? "thinking" : seg.kind});
+    }
+    const kind = seg.kind === "text" ? "text" : (seg.kind === "think" ? "think" : "tool");
+    const width = contentWidth - (seg.kind === "text" ? 0 : PNG_THINK_INDENT);
+    ctx.font = pngFont(kind);
+    for (const l of pngWrap(ctx, seg.text, width)) lines.push({kind, text: l});
+  }
+  let height = PNG_PAD_TOP + PNG_ROLE_LH + PNG_HEADER_GAP + PNG_PAD_BOTTOM;
+  for (const l of lines.slice(1)) {
+    height += (l.kind === "thinklabel") ? PNG_ROLE_LH : PNG_LH;
+  }
+  return {role: m.role, lines, height};
+}
+
+function buildChatCanvas() {
+  if (!thread.length) return null;
+  const pal = pngPalette();
+  const columns = Math.min(6, Math.max(1, parseInt(pngColsIn.value) || 1));
+  const colWidth = Math.min(1200, Math.max(240, parseInt(pngWidthIn.value) || 560));
+  const scale = parseFloat(pngScaleSel.value) || 2;
+  const includeThinking = pngThinkingIn.checked;
+  const skip = Math.max(0, parseInt(pngSkipIn.value) || 0);
+
+  const msgs = thread.slice(skip);
+  if (!msgs.length) return null;
+
+  const measure = document.createElement("canvas").getContext("2d");
+  const contentWidth = colWidth - PNG_BORDER - 2 * PNG_PAD_X;
+  const items = msgs.map(m => pngLayoutMessage(measure, m, contentWidth, includeThinking));
+
+  // Sequential column fill: keep reading order, target equal column heights.
+  const total = items.reduce((a, x) => a + x.height, 0) + PNG_MSG_GAP * (items.length - 1);
+  const target = total / columns;
+  const cols = [[]];
+  let h = 0;
+  for (const it of items) {
+    if (h > 0 && h + it.height > target && cols.length < columns) {
+      cols.push([]);
+      h = 0;
+    }
+    cols[cols.length - 1].push(it);
+    h += it.height + PNG_MSG_GAP;
+  }
+
+  const colHeight = (col) =>
+    col.reduce((a, x) => a + x.height, 0) + PNG_MSG_GAP * Math.max(0, col.length - 1);
+  const cssW = PNG_PAGE_PAD * 2 + cols.length * colWidth + (cols.length - 1) * PNG_COL_GAP;
+  const cssH = PNG_PAGE_PAD * 2 + Math.max(...cols.map(colHeight));
+  if (cssW * scale > PNG_MAX_DIM || cssH * scale > PNG_MAX_DIM) {
+    return {error: `image would be ${Math.round(cssW * scale)}×${Math.round(cssH * scale)}px — ` +
+      `over the browser canvas limit. add columns, narrow the width, or lower the scale.`};
+  }
+
+  const c = document.createElement("canvas");
+  c.width = Math.round(cssW * scale);
+  c.height = Math.round(cssH * scale);
+  const ctx = c.getContext("2d");
+  ctx.scale(scale, scale);
+  ctx.textBaseline = "top";
+  ctx.fillStyle = pal.bg;
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  cols.forEach((col, ci) => {
+    const x0 = PNG_PAGE_PAD + ci * (colWidth + PNG_COL_GAP);
+    let y = PNG_PAGE_PAD;
+    for (const it of col) {
+      // Bubble: rounded fill + accent strip on the left edge.
+      const bubble = it.role === "user" ? pal.userBg : pal.paper;
+      const stripe = it.role === "user" ? pal.accent : pal.rule;
+      ctx.save();
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x0, y, colWidth, it.height, 4);
+      else ctx.rect(x0, y, colWidth, it.height);
+      ctx.fillStyle = bubble;
+      ctx.fill();
+      ctx.clip();
+      ctx.fillStyle = stripe;
+      ctx.fillRect(x0, y, PNG_BORDER, it.height);
+      ctx.restore();
+
+      // Lines.
+      let ly = y + PNG_PAD_TOP;
+      for (const l of it.lines) {
+        ctx.font = pngFont(l.kind);
+        if (l.kind === "role") {
+          ctx.fillStyle = pal.accent;
+          try { ctx.letterSpacing = "1.5px"; } catch {}
+        } else if (l.kind === "think" || l.kind === "thinklabel" || l.kind === "tool") {
+          ctx.fillStyle = pal.muted;
+        } else {
+          ctx.fillStyle = pal.ink;
+        }
+        const lx = x0 + PNG_BORDER + PNG_PAD_X +
+          (l.kind === "think" || l.kind === "tool" ? PNG_THINK_INDENT : 0);
+        ctx.fillText(l.text, lx, ly);
+        try { ctx.letterSpacing = "0px"; } catch {}
+        ly += (l.kind === "role" || l.kind === "thinklabel") ? PNG_ROLE_LH : PNG_LH;
+        if (l.kind === "role") ly += PNG_HEADER_GAP;
+      }
+      y += it.height + PNG_MSG_GAP;
+    }
+  });
+  return {canvas: c};
+}
+
+function refreshPngPreview() {
+  pngCanvas = null;
+  pngNote.hidden = true;
+  pngMeta.textContent = "";
+  pngPreview.innerHTML = "";
+  const res = buildChatCanvas();
+  if (!res) {
+    pngNote.textContent = thread.length
+      ? "nothing left after skipping — lower the skip count."
+      : "nothing to render — the chat is empty.";
+    pngNote.hidden = false;
+    return;
+  }
+  if (res.error) {
+    pngNote.textContent = res.error;
+    pngNote.hidden = false;
+    return;
+  }
+  pngCanvas = res.canvas;
+  pngPreview.appendChild(res.canvas);
+  const shown = thread.length - Math.max(0, parseInt(pngSkipIn.value) || 0);
+  pngMeta.textContent = `${shown} msgs · ${res.canvas.width} × ${res.canvas.height}px`;
+}
+
+$("download-chat").onclick = () => {
+  pngModal.hidden = false;
+  refreshPngPreview();
+};
+$("png-close").onclick = () => { pngModal.hidden = true; };
+pngModal.onclick = (e) => { if (e.target === pngModal) pngModal.hidden = true; };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !pngModal.hidden) pngModal.hidden = true;
+});
+for (const el of [pngColsIn, pngWidthIn, pngScaleSel, pngThemeSel, pngThinkingIn, pngSkipIn]) {
+  el.addEventListener("input", refreshPngPreview);
+}
+$("png-download").onclick = () => {
+  if (!pngCanvas) return;
+  pngCanvas.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `talkie-chat-${cid.slice(0, 8)}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+};
+
+</script>
+
+</body>
+</html>
